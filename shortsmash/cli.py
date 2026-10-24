@@ -19,6 +19,11 @@ app = typer.Typer(help="ShortSmash — prompt in, viral short out.",
                   no_args_is_help=True)
 console = Console()
 
+# ShortSmash Social 0.4 (local MVP): profile/post/image/approval, dry-run only.
+from . import social_cli  # noqa: E402
+
+app.add_typer(social_cli.app, name="social")
+
 
 def _cfg(**overrides) -> Config:
     return Config({k: v for k, v in overrides.items() if v is not None})
