@@ -7,6 +7,7 @@ paid providers fail clearly and spend nothing.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -82,14 +83,114 @@ def image_cmd(prompt: str,
         console.print(f"  candidate {c['candidate']}: {c['path']} ({c['dimensions']}) - {c['note']}")
 
 
+@app.command("readiness")
+def readiness_cmd():
+    """Publishing readiness, without printing secrets and without any live
+    API call. Reports present/missing per platform plus the exact next step
+    from docs/setup-*.md. Real live posting stays unwired."""
+    from .config import HOME
+    home = Path(HOME)
+    def present(*names: str) -> bool:
+        return any(os.environ.get(n) for n in names)
+    checks = [
+        ("youtube", (home / "youtube_client.json").exists()
+         or (home / "youtube_token.json").exists(),
+         "Google Cloud Console -> enable YouTube Data API v3 -> OAuth client -> "
+         "save as ~/.shortsmash/youtube_client.json (docs/setup-youtube.md)."),
+        ("bluesky", present("BSKY_HANDLE", "BSKY_APP_PASSWORD"),
+         "bsky.app -> Settings -> App passwords -> create 'shortsmash' -> set "
+         "BSKY_HANDLE and BSKY_APP_PASSWORD (docs/setup-bluesky.md)."),
+        ("x", present("X_API_KEY", "X_ACCESS_TOKEN"),
+         "developer.x.com -> Project + App -> OAuth 1.0a Read and Write -> set "
+         "X_API_KEY/X_API_SECRET/X_ACCESS_TOKEN/X_ACCESS_SECRET (docs/setup-x.md). "
+         "Note: X posting is paid."),
+        ("threads", present("THREADS_USER_ID", "THREADS_ACCESS_TOKEN"),
+         "developers.facebook.com -> Meta app -> Threads use case -> Tester -> "
+         "long-lived token -> set THREADS_USER_ID/THREADS_ACCESS_TOKEN "
+         "(docs/setup-threads.md)."),
+        ("instagram", present("IG_ACCESS_TOKEN", "IG_USER_ID"),
+         "Instagram Business/Creator linked to a Facebook Page -> Meta app -> "
+         "Instagram Graph API -> long-lived Page token -> set IG_ACCESS_TOKEN/"
+         "IG_USER_ID (docs/setup-instagram.md)."),
+        ("tiktok", present("TIKTOK_ACCESS_TOKEN"),
+         "developers.tiktok.com -> app -> Content Posting API -> OAuth -> set "
+         "TIKTOK_ACCESS_TOKEN/TIKTOK_REFRESH_TOKEN; production needs app review "
+         "(docs/setup-tiktok.md)."),
+    ]
+    out = []
+    for platform, ok, next_step in checks:
+        out.append({"platform": platform, "ready": bool(ok),
+                    "next_step": next_step})
+        console.print(f"{platform}: {'ready' if ok else 'MISSING'}"
+                      + ("" if ok else f" -> {next_step}"))
+    console.print(json.dumps({"platforms": out, "live_posting": False,
+                              "note": "Readiness only. No live API was called and "
+                                      "no secret value was printed."}, indent=2))
+
+
+@app.command("validate")
+def validate_cmd(pack_id: str, platform: str = typer.Option("x")):
+    """Dry-run validation of a pack's draft against platform limits, no live
+    API call. Reports pass/fail per check; approval is reported separately."""
+    from . import posts as posts_mod
+    try:
+        pack = approval.get_pack(pack_id)
+    except KeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    drafts = [d for d in pack["drafts"] if d.get("platform") == platform]
+    if not drafts:
+        console.print(f"[red]No draft for platform {platform!r} in pack {pack_id}[/red]")
+        raise typer.Exit(1)
+    draft = drafts[0]
+    text = draft.get("text", "")
+    limit = posts_mod._LIMITS.get(platform, 1000)
+    checks = [
+        {"check": "approved_or_scheduled",
+         "pass": draft.get("status") in ("approved", "scheduled"),
+         "detail": f"status={draft.get('status')}"},
+        {"check": "character_limit",
+         "pass": len(text) <= limit,
+         "detail": f"{len(text)} chars, limit {limit}"},
+        {"check": "non_empty_text",
+         "pass": bool(text.strip()),
+         "detail": "text is empty" if not text.strip() else "ok"},
+        {"check": "ai_disclosure_flag_present",
+         "pass": "source" in draft,
+         "detail": f"source={draft.get('source')}"},
+    ]
+    media = pack.get("media") or {}
+    imgs = (media.get("images") or {}).get("candidates") if isinstance(media.get("images"), dict) else None
+    if imgs:
+        for c in imgs[:1]:
+            p = Path(c.get("path", ""))
+            checks.append({"check": "media_file_exists",
+                           "pass": p.exists(),
+                           "detail": str(p)})
+            if p.exists():
+                checks.append({"check": "media_size_under_50mb",
+                               "pass": p.stat().st_size < 50_000_000,
+                               "detail": f"{p.stat().st_size} bytes"})
+    result = {"pack_id": pack_id, "platform": platform,
+              "overall_pass": all(c["pass"] for c in checks), "checks": checks,
+              "live_api_called": False}
+    console.print(json.dumps(result, indent=2))
+
+
 @app.command("repurpose")
-def repurpose_cmd(source: str, topic: str = typer.Option("")):
+def repurpose_cmd(source: str, topic: str = typer.Option(""),
+                  transcript: Optional[str] = typer.Option(None, help="Transcript file: .srt, timed .txt, or plain .txt"),
+                  no_audio: bool = typer.Option(False, help="Skip ffprobe audio-energy signal"),
+                  no_scene: bool = typer.Option(False, help="Skip ffmpeg scene-change signal")):
     path = Path(source)
     if path.exists():
         staged = repurpose.stage_input(path)
         console.print(json.dumps(staged, indent=2))
         if staged["kind"] == "video":
-            clips = repurpose.clip_candidates(Path(staged["staged"]))
+            clips = repurpose.clip_candidates(
+                Path(staged["staged"]),
+                transcript_path=Path(transcript) if transcript else None,
+                use_audio=not no_audio, use_scene=not no_scene)
             console.print(json.dumps(clips, indent=2))
         pack_topic = topic or path.stem
     else:

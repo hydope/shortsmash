@@ -79,26 +79,41 @@ def _apply_profile(text: str, profile: dict | None) -> str:
     return text
 
 
+# Openers are deliberately different per platform, so the same idea does
+# not read as copy-paste at first glance. The opener is part of the draft,
+# not a suffix: the first ~20 characters must differ across platforms.
+_OPENERS = {
+    "x": "Punchy take: ",
+    "threads": "Okay, story time: ",
+    "bluesky": "In short: ",
+    "instagram": "Picture this: ",
+    "youtube": "You need to see this: ",
+    "linkedin": "A lesson I keep coming back to: ",
+}
+
+
 def _platform_format(platform: str, body: str, hashtags: list[str],
                      profile: dict | None) -> str:
     tags = " ".join(hashtags)
+    opener = _OPENERS.get(platform, "")
+    opened = f"{opener}{body}".strip()
     if platform == "x":
-        text = f"{body} {tags}".strip()
+        text = f"{opened} {tags}".strip()
     elif platform == "threads":
-        text = f"{body}\n\n{tags}\n\nMore in the thread below.".strip()
+        text = f"{opened}\n\n{tags}\n\nMore in the thread below.".strip()
     elif platform == "bluesky":
-        text = f"{body}\n{tags}\n\nShort version, for Bluesky.".strip()
+        text = f"{opened}\n{tags}\n\nShort version, for Bluesky.".strip()
     elif platform == "instagram":
-        text = f"{body}\n\n{tags}\n\nSee you in the next one."
+        text = f"{opened}\n\n{tags}\n\nSee you in the next one."
     elif platform == "youtube":
-        text = f"{body}\n\n{tags}\n\nFull short version on this channel."
+        text = f"{opened}\n\n{tags}\n\nFull short version on this channel."
     elif platform == "linkedin":
         tone = profile.get("tone", "") if profile else ""
-        text = f"{body}\n\n{tags}"
+        text = f"{opened}\n\n{tags}"
         if tone:
             text += f"\n\nShared in a {tone} tone."
     else:
-        text = body
+        text = opened
     limit = _LIMITS[platform]
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
@@ -184,7 +199,12 @@ def generate_drafts(topic: str, profile: dict | None = None,
             text = re.sub(r"\s+", " ", text).strip()
             drafts.append({
                 "platform": platform, "variant": i, "kind": kind,
-                "text": text, "hashtags": tags, "source": source,
+                "text": text, "hashtags": tags,
+                # Honest per-variant label: only variant 1 uses the LLM
+                # hook; the other variants are template bodies, even when
+                # a hook was generated for the pack.
+                "source": "ai" if (hook and i == 1) else "template",
+                "ai_hook": bool(hook and i == 1),
                 "inferred": inferred, "fact_gaps": gaps,
                 "source_labels": (
                     ["supplied topic/notes only - no profile invented"]

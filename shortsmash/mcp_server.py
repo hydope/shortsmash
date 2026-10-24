@@ -71,6 +71,56 @@ def project_status(slug: str) -> str:
     return f"{slug}: " + ", ".join(parts)
 
 
+@mcp.tool()
+def list_social_packs() -> str:
+    """List ShortSmash Social draft packs and their approval status.
+
+    Preview only. There is deliberately no approve or publish tool here:
+    an agent must not approve its own post. Approval is a human action
+    in the Studio social page (/social) or the CLI.
+    """
+    from . import approval
+    packs = approval.list_packs()
+    if not packs:
+        return "No social packs yet."
+    lines = []
+    for p in packs:
+        statuses: dict[str, int] = {}
+        for d in p["drafts"]:
+            statuses[d["status"]] = statuses.get(d["status"], 0) + 1
+        lines.append(f"{p['id']} {p['topic']} {statuses}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def social_queue() -> str:
+    """Show the ShortSmash Social approval queue (packs and draft statuses).
+
+    Preview only, same intentional limit as list_social_packs: no
+    approve or live-publish tool exists in this MCP server.
+    """
+    return list_social_packs()
+
+
+@mcp.tool()
+def social_draft_preview(topic: str, notes: str = "") -> str:
+    """Generate draft previews for a topic, for human review only.
+
+    Uses offline template drafts by default (source=template) so this
+    tool never spends money or calls a paid API. Drafts are NOT approved
+    and NOT published by this tool. A human must approve them in Studio
+    or the CLI before any dry-run or live publishing step.
+    """
+    from . import posts, profile as prof
+    result = posts.generate_drafts(topic, prof.load_profile(), notes=notes,
+                                   use_llm=False)
+    lines = []
+    for platform, drafts in result["platforms"].items():
+        lines.append(f"{platform}: {drafts[0]['text'][:180]} "
+                     f"(source={drafts[0]['source']})")
+    return "\n".join(lines)
+
+
 def main() -> None:
     mcp.run()
 

@@ -52,6 +52,184 @@ def cost_preview(provider: str, count: int = 4,
             "within_cap": total is None or total <= daily_cap_usd}
 
 
+def _egress_proxy() -> str | None:
+    """Proxy pattern reused from stock.py; plain env proxy otherwise."""
+    try:
+        from .stock import _egress_proxy as _stock_proxy
+        return _stock_proxy()
+    except Exception:
+        import os
+        return os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
+
+
+def _pixabay_photo_search_env(query: str, per_page: int, cfg=None) -> list[dict]:
+    """Portable photo search: PIXABAY_API_KEY from env/config only."""
+    import httpx
+    key = None
+    if cfg is not None:
+        try:
+            key = cfg.pixabay_key()
+        except Exception:
+            key = None
+    if not key:
+        import os
+        key = os.environ.get("PIXABAY_API_KEY")
+    if not key:
+        raise RuntimeError("no PIXABAY_API_KEY in env/config")
+    r = httpx.get("https://pixabay.com/api/",
+                  params={"key": key, "q": query, "image_type": "photo",
+                          "per_page": per_page},
+                  timeout=30, proxy=_egress_proxy())
+    r.raise_for_status()
+    return r.json().get("hits", [])
+
+
+def _pixabay_photo_search_helper(query: str, per_page: int) -> list[dict]:
+    """Vault-helper photo search, when the helper supports search_photos.
+
+    This mirrors stock.py's video-helper pattern: the key never appears
+    in arguments, logs, or code. The helper script carries a surrogate
+    that the runtime swaps for the real credential on pixabay.com.
+    """
+    import subprocess
+    import sys
+    helper = Path.home() / "workspace/custom-connectors/custom.pixabay/bin/pixabay.py"
+    if not helper.exists():
+        raise RuntimeError("pixabay helper not found")
+    proc = subprocess.run(
+        [sys.executable, str(helper), "search_photos"],
+        input=json.dumps({"q": query, "per_page": per_page}).encode(),
+        capture_output=True, timeout=90)
+    try:
+        data = json.loads(proc.stdout.decode() or "{}")
+    except Exception:
+        raise RuntimeError("pixabay helper returned unparseable output")
+    if not data.get("ok"):
+        raise RuntimeError(f"pixabay helper failed: {data.get('error')}")
+    return data["data"].get("hits", [])
+
+
+def search_stock_photos(query: str, per_page: int = 4, cfg=None,
+                        out_dir: Path | None = None,
+                        social_base: Path | None = None,
+                        target_size: str = "feed") -> dict:
+    """Search real Pixabay photos and download them. No template fallback
+    here: on failure this raises with the exact blocker, so callers cannot
+    mistake a template for a photo."""
+    import httpx
+    errors: list[str] = []
+    hits: list[dict] = []
+    for searcher in (_pixabay_photo_search_env, _pixabay_photo_search_helper):
+        try:
+            if searcher is _pixabay_photo_search_env:
+                hits = searcher(query, per_page, cfg)
+            else:
+                hits = searcher(query, per_page)
+            if hits:
+                break
+        except Exception as exc:  # noqa: BLE001 - collect, try next path
+            errors.append(f"{searcher.__name__}: {exc}"[:200])
+    if not hits:
+        raise RuntimeError(
+            "Pixabay photo search failed: " + "; ".join(errors)
+            + ". Set PIXABAY_API_KEY (see .env.example) or use a "
+            "photo-capable pixabay helper.")
+    target = SIZES.get(target_size, SIZES["feed"])
+    out_root = Path(out_dir) if out_dir is not None else (
+        (Path(social_base) if social_base is not None else HOME / "social")
+        / "images")
+    out_root.mkdir(parents=True, exist_ok=True)
+    slug = hashlib.sha256(query.encode()).hexdigest()[:10]
+    candidates = []
+
+    def _download_one(url: str, dest: Path) -> bool:
+        """Download one URL with one 429 retry. Never leaks the URL in errors."""
+        import time
+        for attempt in range(2):
+            try:
+                with httpx.stream("GET", url, timeout=60,
+                                  follow_redirects=True,
+                                  proxy=_egress_proxy()) as resp:
+                    if resp.status_code == 429 and attempt == 0:
+                        time.sleep(2)
+                        continue
+                    resp.raise_for_status()
+                    with open(dest, "wb") as fh:
+                        for chunk in resp.iter_bytes(1 << 20):
+                            fh.write(chunk)
+                return True
+            except Exception:
+                if attempt == 0:
+                    import time as _t
+                    _t.sleep(2)
+                    continue
+                return False
+        return False
+
+    for i, hit in enumerate(hits, start=1):
+        if len(candidates) >= per_page:
+            break
+        # Try large first, then the smaller webformat as a fallback.
+        urls = [u for u in (hit.get("largeImageURL"),
+                            hit.get("webformatURL")) if u]
+        if not urls:
+            continue
+        raw = out_root / f"{slug}-{target_size}-stock-{len(candidates) + 1}.jpg"
+        ok = False
+        for url in urls:
+            if _download_one(url, raw):
+                ok = True
+                break
+        if not ok:
+            continue
+        import time as _time
+        _time.sleep(0.5)
+        magic = raw.read_bytes()[:4]
+        if magic[:2] != b"\xff\xd8" and magic != b"\x89PNG":
+            raw.unlink(missing_ok=True)
+            continue
+        # Centre-crop/resize to the platform target size with Pillow.
+        try:
+            from PIL import Image
+            img = Image.open(raw).convert("RGB")
+            orig = img.size
+            # Centre crop to target aspect, then resize.
+            tw, th = target
+            sw, sh = orig
+            scale = max(tw / sw, th / sh)
+            resized = img.resize((round(sw * scale), round(sh * scale)))
+            left = (resized.width - tw) // 2
+            top = (resized.height - th) // 2
+            cropped = resized.crop((left, top, left + tw, top + th))
+            cropped.save(raw, "JPEG", quality=90)
+            final = (tw, th)
+        except Exception:
+            orig, final = (0, 0), target
+        candidates.append({
+            "candidate": len(candidates) + 1, "path": str(raw), "size": target_size,
+            "dimensions": final, "original_dimensions": orig,
+            "provider": "stock", "model": "pixabay-photo",
+            "estimated_cost_usd": 0.0,
+            "source": "pixabay", "pixabay_id": hit.get("id"),
+            "page_url": hit.get("pageURL"), "tags": hit.get("tags", ""),
+            "photographer": hit.get("user", ""),
+            "licence": ("Pixabay content licence - free to use, see "
+                        "pixabay.com/service/license/; do not resell the file itself."),
+            "note": "Real Pixabay photo, downloaded and cropped to platform size.",
+            "provenance": {
+                "prompt": query, "provider": "stock",
+                "model": "pixabay-photo", "size": target_size,
+                "pixabay_id": hit.get("id"), "page_url": hit.get("pageURL"),
+                "estimated_cost_usd": 0.0,
+            },
+        })
+    if not candidates:
+        raise RuntimeError("Pixabay photo search returned hits but no "
+                           "downloadable valid image files.")
+    return {"prompt": query, "provider": "stock", "size": target_size,
+            "dimensions": target, "candidates": candidates}
+
+
 def _usage_path(base: Path | None = None) -> Path:
     d = Path(base) if base is not None else HOME / "social"
     d.mkdir(parents=True, exist_ok=True)
@@ -171,6 +349,26 @@ def generate(prompt: str, provider: str = "template", size: str = "feed",
             "build: it is experimental, capped, and requires a key/balance "
             "in 2026 tests. No API call was made and no money was spent. "
             "Use provider='template' for offline candidates.")
+    note = ""
+    if provider == "stock":
+        # Real photos first: env-key Pixabay API, then vault-helper
+        # search_photos. Only if both fail do we fall back to a labelled
+        # template, with the failure in the note - never silently.
+        try:
+            from .config import Config as _Cfg
+            real = search_stock_photos(prompt, count, cfg=_Cfg(),
+                                       out_dir=out_dir,
+                                       social_base=social_base,
+                                       target_size=size)
+            _record_usage("stock", len(real["candidates"]), 0.0, social_base)
+            real["cost_preview"] = preview
+            real["note"] = "Real Pixabay photos - see candidate provenance."
+            return real
+        except Exception as exc:  # noqa: BLE001 - fallback is labelled
+            import re as _re
+            clean = _re.sub(r"https?://\S+", "[url]", str(exc))[:200]
+            note = (f"stock_search_failed: {clean}. Falling back to a "
+                    "labelled template, not a stock photo.")
     style = style_lock(profile) if profile else ""
     out_root = Path(out_dir) if out_dir is not None else (
         (Path(social_base) if social_base is not None else HOME / "social")
@@ -178,15 +376,6 @@ def generate(prompt: str, provider: str = "template", size: str = "feed",
     out_root.mkdir(parents=True, exist_ok=True)
     slug = hashlib.sha256(prompt.encode()).hexdigest()[:10]
     candidates = []
-    note = ""
-    if provider == "stock":
-        # stock.py is video-only (Pixabay/Pexels clips). For still images,
-        # this build does not pretend a video clip is a photo: fall back
-        # to a labelled template unless a real stock photo was downloaded
-        # by a future stock-photo path. The note makes that explicit.
-        note = ("stock_unavailable_for_still_images: stock.py provides "
-                "video clips, not photos, so this candidate is a labelled "
-                "template fallback, not a stock photo.")
     for i in range(1, count + 1):
         path = _render_template(prompt, style, SIZES[size], i,
                                 out_root / f"{slug}-{size}-candidate-{i}.png")
