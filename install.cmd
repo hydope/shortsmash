@@ -35,7 +35,7 @@ if %errorlevel% neq 0 (
 )
 where python >nul 2>&1
 if %errorlevel% neq 0 (
-  echo  [X] Python install failed. Install from python.org (tick "Add to PATH"), then re-run.
+  echo  [X] Python install failed. Install from python.org and tick Add python.exe to PATH, then re-run.
   pause & exit /b 1
 )
 for /f "tokens=2" %%v in ('python --version 2^>^&1') do set PYV=%%v
@@ -45,7 +45,24 @@ for /f "tokens=1,2 delims=." %%a in ("%PYV%") do (
   if %%a GTR 3 set SKIP_VISION=1
   if %%a EQU 3 if %%b GEQ 14 set SKIP_VISION=1
 )
-if %SKIP_VISION%==1 echo  [!!] Python %PYV% has no torch wheels yet - vision checks skipped.
+:: Python 3.14+ cannot build a working venv (ensurepip fails, so pip.exe
+:: never appears) - and this project requires 3.11-3.13. If the machine's
+:: python is 3.14+, install 3.12 side by side and use that instead.
+set "PYEXE=python"
+if %SKIP_VISION%==1 (
+  echo  [!] Python %PYV% cannot build a working venv, installing Python 3.12 side by side...
+  winget install -e --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+  set "PYEXE="
+  for /f "delims=" %%p in ('py -3.12 -c "import sys; print(sys.executable)" 2^>nul') do set "PYEXE=%%p"
+  if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" set "PYEXE=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+  if not defined PYEXE if exist "C:\Program Files\Python312\python.exe" set "PYEXE=C:\Program Files\Python312\python.exe"
+  if not defined PYEXE (
+    echo  [X] Could not find Python 3.12 after installing it. Install Python 3.12 from python.org and re-run.
+    pause & exit /b 1
+  )
+  echo  [OK] Using Python 3.12 at !PYEXE!
+  set SKIP_VISION=0
+)
 
 :: ---------- FFmpeg ----------
 where ffmpeg >nul 2>&1
@@ -70,8 +87,17 @@ if %errorlevel%==0 (
     echo  [*] Updating existing install...
     git -C "%INSTALLDIR%" pull --ff-only >nul 2>&1
   ) else (
-    echo  [*] Cloning ShortSmash...
-    git clone --depth 1 "%REPO%" "%INSTALLDIR%"
+    echo  [*] Cloning ShortSmash (code only, no demo videos)...
+    git clone --depth 1 --filter=blob:none --sparse "%REPO%" "%INSTALLDIR%"
+    if !errorlevel! neq 0 (
+      echo  [X] Clone failed. Delete "%INSTALLDIR%" and re-run, or check your connection.
+      pause & exit /b 1
+    )
+    git -C "%INSTALLDIR%" sparse-checkout set shortsmash scripts fonts
+    if !errorlevel! neq 0 (
+      echo  [!] Sparse checkout unsupported by this git - falling back to full tree.
+      git -C "%INSTALLDIR%" sparse-checkout disable
+    )
   )
 ) else (
   echo  [*] Downloading ShortSmash zip (no git found)...
@@ -79,6 +105,12 @@ if %errorlevel%==0 (
   powershell -NoProfile -Command "Expand-Archive -Path '%TEMP%\shortsmash.zip' -DestinationPath '%TEMP%' -Force"
   if exist "%INSTALLDIR%" rmdir /s /q "%INSTALLDIR%"
   move "%TEMP%\shortsmash-master" "%INSTALLDIR%" >nul
+  if exist "%INSTALLDIR%\demo" rmdir /s /q "%INSTALLDIR%\demo"
+  if exist "%INSTALLDIR%\launch\fb-posts" rmdir /s /q "%INSTALLDIR%\launch\fb-posts"
+)
+if not exist "%INSTALLDIR%\pyproject.toml" (
+  echo  [X] ShortSmash code did not arrive completely. Delete "%INSTALLDIR%" and re-run.
+  pause & exit /b 1
 )
 echo  [OK] ShortSmash code ready
 
@@ -86,7 +118,11 @@ echo  [OK] ShortSmash code ready
 cd /d "%INSTALLDIR%"
 if not exist ".venv\Scripts\python.exe" (
   echo  [*] Creating virtual environment...
-  python -m venv .venv
+  "%PYEXE%" -m venv .venv
+)
+if not exist ".venv\Scripts\pip.exe" (
+  echo  [X] Virtual environment has no pip. This happens on Python 3.14 - use Python 3.12 or 3.13.
+  pause & exit /b 1
 )
 echo  [*] Installing ShortSmash (a few minutes)...
 .venv\Scripts\python.exe -m pip install -q --upgrade pip >nul 2>&1

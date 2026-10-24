@@ -1,0 +1,8 @@
+# install.cmd and install.bat are downloaded RAW (curl / zip) and executed
+# by cmd.exe, which misparses LF-only files inside (...) blocks. The git
+# BLOB itself must therefore be CRLF - raw.githubusercontent.com serves the
+# blob, not a checkout, so `eol=crlf` would NOT fix downloads (it
+# normalizes back to LF on commit). `-text` disables all conversion so the
+# committed CRLF bytes survive; `diff` keeps diffs readable as text.
+*.cmd -text diff
+*.bat -text diff

@@ -20,7 +20,9 @@ if [ ! -f "$(dirname "$0")/pyproject.toml" ]; then
   if [ -d "$TARGET/.git" ]; then
     git -C "$TARGET" pull --ff-only >/dev/null 2>&1 || true
   else
-    git clone --depth 1 https://github.com/hydope/shortsmash.git "$TARGET"
+    # Code only: demo videos are ~200MB and the app never reads them.
+    git clone --depth 1 --filter=blob:none --sparse https://github.com/hydope/shortsmash.git "$TARGET"
+    git -C "$TARGET" sparse-checkout set shortsmash scripts fonts || { echo "Sparse checkout unsupported by this git - falling back to the full tree."; git -C "$TARGET" sparse-checkout disable; }
   fi
   cd "$TARGET"
 else

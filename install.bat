@@ -32,10 +32,11 @@ for /f "tokens=1,2 delims=." %%a in ("%PYV%") do ( set PYMAJ=%%a & set PYMIN=%%b
 if %PYMAJ% GTR 3 set SKIP_VISION=1
 if %PYMAJ% EQU 3 if %PYMIN% GEQ 14 set SKIP_VISION=1
 if %SKIP_VISION% EQU 1 (
-  echo  [!] Python %PYV% is very new - torch has no build for it yet,
-  echo      so the offline footage check will be skipped.
-  echo      For the full feature set use Python 3.11-3.13.
-  echo      Everything else installs normally.
+  echo  [X] Python %PYV% cannot build a working venv here.
+  echo      Install Python 3.11, 3.12 or 3.13 from python.org,
+  echo      then run install.bat again.
+  pause
+  exit /b 1
 )
 
 :: ---------- ffmpeg ----------
@@ -63,6 +64,11 @@ if not exist ".venv\Scripts\python.exe" (
     pause
     exit /b 1
   )
+)
+if not exist ".venv\Scripts\pip.exe" (
+  echo  [X] Virtual environment has no pip. Use Python 3.11, 3.12 or 3.13.
+  pause
+  exit /b 1
 )
 echo  [OK] Virtual environment ready
 

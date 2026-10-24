@@ -37,7 +37,31 @@ $pyv = (python --version 2>&1) -replace "Python ",""
 Ok "Python $pyv"
 $major = [int]($pyv.Split(".")[0]); $minor = [int]($pyv.Split(".")[1])
 $SkipVision = ($major -gt 3) -or ($major -eq 3 -and $minor -ge 14)
-if ($SkipVision) { Warn "Python $pyv has no torch wheels yet - vision checks will be skipped (everything else works)." }
+# Python 3.14+ cannot build a working venv (ensurepip fails, so pip.exe
+# never appears) - and the README requires 3.11-3.13. If the machine's
+# python is 3.14+, install 3.13 side by side and use that instead.
+$PythonExe = "python"
+if ($SkipVision) {
+  Say "Python $pyv cannot build a working venv - installing Python 3.13 side by side..."
+  winget install -e --id Python.Python.3.13 --silent --accept-package-agreements --accept-source-agreements | Out-Null
+  $py13 = $null
+  if (Get-Command py -ErrorAction SilentlyContinue) {
+    try { $py13 = (py -3.13 -c "import sys; print(sys.executable)" 2>$null) | Select-Object -First 1 } catch {}
+  }
+  if (-not $py13) {
+    foreach ($cand in @("$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+                        "C:\Program Files\Python313\python.exe")) {
+      if (Test-Path $cand) { $py13 = $cand; break }
+    }
+  }
+  if (-not $py13 -or -not (Test-Path $py13)) {
+    Fail "Could not find Python 3.13 after installing it. Install Python 3.13 from python.org (tick 'Add to PATH'), then re-run."
+  }
+  $PythonExe = $py13
+  $pyv = (& $py13 --version 2>&1) -replace "Python ",""
+  $SkipVision = $false
+  Ok "Using Python $pyv at $py13"
+}
 
 # ---------- FFmpeg ----------
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
@@ -62,9 +86,30 @@ if ($haveGit) { Ok "Git present" }
 if (Test-Path (Join-Path $InstallDir ".git")) {
   Say "Updating existing install at $InstallDir..."
   git -C $InstallDir pull --ff-only | Out-Null
+  if ($LASTEXITCODE -ne 0) { Warn "Could not update the existing install - using the copy already on disk." }
 } elseif ($haveGit) {
-  Say "Cloning ShortSmash to $InstallDir..."
-  git clone --depth 1 $RepoUrl $InstallDir | Out-Null
+  Say "Cloning ShortSmash to $InstallDir (code only - no demo videos)..."
+  git clone --depth 1 --filter=blob:none --sparse $RepoUrl $InstallDir
+  if ($LASTEXITCODE -ne 0) {
+    # A clone can report success yet leave a partial tree (e.g. one file
+    # locked by antivirus during checkout). Never claim [OK] on that:
+    # retry with git's own restore, and fail loudly if it still fails.
+    Warn "Checkout hit a snag - retrying the file restore..."
+    git -C $InstallDir restore --source=HEAD -- .
+    if ($LASTEXITCODE -ne 0) {
+      Fail "Clone/checkout failed. Delete $InstallDir and re-run, or repair with: git -C $InstallDir restore --source=HEAD -- ."
+    }
+  }
+  # Demo videos are ~200MB and the app never reads them at runtime, so
+  # keep them out of the install: code + scripts + fonts only.
+  git -C $InstallDir sparse-checkout set shortsmash scripts fonts
+  if ($LASTEXITCODE -ne 0) {
+    Warn "Sparse checkout unsupported by this git - falling back to the full tree."
+    git -C $InstallDir sparse-checkout disable
+  }
+  if (-not (Test-Path (Join-Path $InstallDir "pyproject.toml"))) {
+    Fail "ShortSmash code did not check out completely (pyproject.toml missing). Delete $InstallDir and re-run."
+  }
 } else {
   Say "Downloading ShortSmash zip..."
   $zip = Join-Path $env:TEMP "shortsmash.zip"
@@ -72,6 +117,10 @@ if (Test-Path (Join-Path $InstallDir ".git")) {
   Expand-Archive -Path $zip -DestinationPath $env:TEMP -Force
   if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
   Move-Item (Join-Path $env:TEMP "shortsmash-master") $InstallDir
+  foreach ($heavy in @("demo", "launch\fb-posts")) {
+    $p = Join-Path $InstallDir $heavy
+    if (Test-Path $p) { Remove-Item -Recurse -Force $p }
+  }
 }
 Ok "ShortSmash code ready"
 
@@ -79,9 +128,12 @@ Ok "ShortSmash code ready"
 $venvPy = Join-Path $InstallDir ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPy)) {
   Say "Creating virtual environment..."
-  python -m venv (Join-Path $InstallDir ".venv")
+  & $PythonExe -m venv (Join-Path $InstallDir ".venv")
 }
 $venvPip = Join-Path $InstallDir ".venv\Scripts\pip.exe"
+if (-not (Test-Path $venvPip)) {
+  Fail "Virtual environment has no pip (ensurepip failed). This happens on Python 3.14 - use Python 3.11, 3.12 or 3.13, then re-run."
+}
 Say "Installing ShortSmash (this takes a few minutes)..."
 & $venvPip install -q --upgrade pip | Out-Null
 $BaseExtras = "ai,voice,web,mcp,trends,bluesky,threads,youtube,x,schedule,captions"
