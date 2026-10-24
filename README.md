@@ -185,18 +185,18 @@ No fake likes, comments, follows, shares, or stars. No botting, no "human-like" 
 FFmpeg, Git if missing, sets everything up, and puts **ShortSmash Studio**
 on your Desktop + Start Menu:
 ```powershell
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hydope/shortsmash/main/install.ps1")))
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hydope/shortsmash/master/install.ps1")))
 ```
 
 **Windows (CMD)** — same thing, one line in Command Prompt:
 ```cmd
-curl -L -o "%TEMP%\rf-install.cmd" "https://raw.githubusercontent.com/hydope/shortsmash/main/install.cmd" && "%TEMP%\rf-install.cmd"
+curl -L -o "%TEMP%\rf-install.cmd" "https://raw.githubusercontent.com/hydope/shortsmash/master/install.cmd" && "%TEMP%\rf-install.cmd"
 ```
 
 **Linux / macOS / Git Bash (Windows)** — one line, works everywhere including
 Git Bash on Windows:
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/hydope/shortsmash/main/install.sh" | bash
+curl -fsSL "https://raw.githubusercontent.com/hydope/shortsmash/master/install.sh" | bash
 ```
 
 After install, launch **ShortSmash Studio** from the Start Menu / Desktop

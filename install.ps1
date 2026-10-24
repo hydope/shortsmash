@@ -1,6 +1,6 @@
 <# ShortSmash one-click installer (PowerShell).
    Run from an elevated-or-not PowerShell with:
-     & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hydope/shortsmash/main/install.ps1")))
+     & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hydope/shortsmash/master/install.ps1")))
    Does everything: Python, FFmpeg, Git, repo, venv, voices, fonts,
    Desktop + Start Menu shortcuts. Then launches the Studio. #>
 $ErrorActionPreference = "Stop"
@@ -68,10 +68,10 @@ if (Test-Path (Join-Path $InstallDir ".git")) {
 } else {
   Say "Downloading ShortSmash zip..."
   $zip = Join-Path $env:TEMP "shortsmash.zip"
-  Invoke-WebRequest -Uri "https://github.com/hydope/shortsmash/archive/refs/heads/main.zip" -OutFile $zip
+  Invoke-WebRequest -Uri "https://github.com/hydope/shortsmash/archive/refs/heads/master.zip" -OutFile $zip
   Expand-Archive -Path $zip -DestinationPath $env:TEMP -Force
   if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
-  Move-Item (Join-Path $env:TEMP "shortsmash-main") $InstallDir
+  Move-Item (Join-Path $env:TEMP "shortsmash-master") $InstallDir
 }
 Ok "ShortSmash code ready"
 

@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 title ShortSmash One-Click Setup
 :: ShortSmash one-click installer for Windows CMD.
 :: One-line install from CMD:
-::   curl -L -o "%TEMP%\rf-install.cmd" "https://raw.githubusercontent.com/hydope/shortsmash/main/install.cmd" && "%TEMP%\rf-install.cmd"
+::   curl -L -o "%TEMP%\rf-install.cmd" "https://raw.githubusercontent.com/hydope/shortsmash/master/install.cmd" && "%TEMP%\rf-install.cmd"
 :: Does everything: Python, FFmpeg, repo, venv, voices, fonts, shortcuts.
 
 echo.
@@ -75,10 +75,10 @@ if %errorlevel%==0 (
   )
 ) else (
   echo  [*] Downloading ShortSmash zip (no git found)...
-  curl -L -o "%TEMP%\shortsmash.zip" "https://github.com/hydope/shortsmash/archive/refs/heads/main.zip"
+  curl -L -o "%TEMP%\shortsmash.zip" "https://github.com/hydope/shortsmash/archive/refs/heads/master.zip"
   powershell -NoProfile -Command "Expand-Archive -Path '%TEMP%\shortsmash.zip' -DestinationPath '%TEMP%' -Force"
   if exist "%INSTALLDIR%" rmdir /s /q "%INSTALLDIR%"
-  move "%TEMP%\shortsmash-main" "%INSTALLDIR%" >nul
+  move "%TEMP%\shortsmash-master" "%INSTALLDIR%" >nul
 )
 echo  [OK] ShortSmash code ready
 

@@ -30,7 +30,7 @@ Either one can veto. Gemini errors fail *open* (a down API shouldn't block your 
 ## Try it
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hydope/shortsmash/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hydope/shortsmash/master/install.sh | bash
 shortsmash serve
 ```
 
