@@ -10,9 +10,12 @@ Rules enforced in code, not just in docs:
   gap instead of being invented.
 - An empty profile invents nothing: drafts describe only the supplied
   topic/notes and are labelled inferred.
-- LLM text is used only as a hook, only when a real LLM provider is
-  configured, and the draft source is labelled "ai" only then. Otherwise
-  the source is "template" and the draft says so.
+- LLM text is used for full bodies when available, via one parsed
+  llm.chat_text call (see _llm_bodies). A variant is labelled "ai"
+  only if that variant's body actually came from the LLM; every other
+  variant is labelled "template". A hook-only fallback is kept if the
+  full-body call fails but a hook succeeds. Otherwise the source is
+  "template" and the draft says so.
 """
 from __future__ import annotations
 
@@ -139,6 +142,135 @@ def _llm_hook(topic: str, profile: dict | None, cfg: Config | None) -> str | Non
     return hook
 
 
+def _llm_bodies(topic: str, profile: dict | None,
+                cfg: Config | None) -> dict[str, list[str]] | None:
+    """Full distinct bodies per platform from ONE llm.chat_text call.
+
+    The prompt asks for clearly delimited sections (``X:``, ``THREADS:``,
+    etc., each with 3 numbered bodies). Parsing is strict: a platform
+    is used only if at least one numbered body was found for it, and a
+    body is used only if it is non-empty and under 900 characters.
+    Returns None if no platform parsed, so callers fall back cleanly
+    to template bodies (or the hook fallback) instead of faking ai.
+    One call, not six, so free-tier rate limits are respected.
+    """
+    try:
+        from . import llm as llm_mod
+        if llm_mod.provider(cfg or Config()) == "template":
+            return None
+        profile_note = ""
+        if profile:
+            bits = [f"{k}: {v}" for k, v in profile.items()
+                    if k in ("does", "niche", "tone", "audience", "language")
+                    and v]
+            if bits:
+                profile_note = "Profile (supplied facts only): " + "; ".join(bits) + ". "
+        raw = llm_mod.chat_text(
+            "You write social-media post bodies. Use only the supplied "
+            "topic and profile facts. No dates, prices, results, or "
+            "endorsements unless the user supplied them. Keep each body "
+            "under 200 words, and make each platform's structure different: "
+            "X short and punchy, Threads a longer story, Bluesky concise "
+            "and declarative, Instagram a visual scene with a call to "
+            "action, YouTube a title-style hook plus a description, "
+            "LinkedIn an insight and a lesson.",
+            f"{profile_note}Topic: {topic}\n\n"
+            "Reply with exactly these sections, in this order, each with "
+            "3 numbered bodies:\n"
+            "X:\n1. ...\n2. ...\n3. ...\n"
+            "THREADS:\n1. ...\n2. ...\n3. ...\n"
+            "BLUESKY:\n1. ...\n2. ...\n3. ...\n"
+            "INSTAGRAM:\n1. ...\n2. ...\n3. ...\n"
+            "YOUTUBE:\n1. ...\n2. ...\n3. ...\n"
+            "LINKEDIN:\n1. ...\n2. ...\n3. ...",
+            cfg or Config())
+    except Exception:
+        return None
+    if not raw:
+        return None
+    header_for = {"x": "x", "threads": "threads", "bluesky": "bluesky",
+                  "instagram": "instagram", "youtube": "youtube",
+                  "linkedin": "linkedin"}
+    parsed: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in raw.splitlines():
+        stripped = line.strip()
+        m = re.match(r"^(X|THREADS|BLUESKY|INSTAGRAM|YOUTUBE|LINKEDIN)\s*:\s*$",
+                     stripped, flags=re.IGNORECASE)
+        if m:
+            current = header_for[m.group(1).lower()]
+            parsed.setdefault(current, [])
+            continue
+        if current is None:
+            continue
+        bm = re.match(r"^[1-3][.)]\s*(.+)$", stripped)
+        if bm and len(parsed[current]) < 3:
+            body = bm.group(1).strip()
+            # _platform_format adds the opener, so strip it here if
+            # the LLM already used it, to avoid a doubled opener.
+            for _op in _OPENERS.values():
+                if body.lower().startswith(_op.lower().strip()):
+                    body = body[len(_op.strip()):].strip()
+                    break
+            if body and len(body) <= 900:
+                parsed[current].append(body)
+    parsed = {k: v for k, v in parsed.items() if v}
+    return parsed or None
+
+
+def _template_body(platform: str, kind: str, topic: str) -> str:
+    """Distinct body structure per platform, template path.
+
+    Only the supplied topic is used; no events, results, or endorsements
+    are invented. The opener in _platform_format is a prefix, the body
+    below is what makes the middle of each platform's draft different.
+    """
+    if kind == "question":
+        base = {
+            "x": f"Ever wondered about {topic}? Short version, no fluff.",
+            "threads": (f"Ever wondered about {topic}? I kept it simple, "
+                        "tried the straightforward version, and here is "
+                        "what stood out. What would you try first?"),
+            "bluesky": f"Ever wondered about {topic}? Simple version, done well.",
+            "instagram": (f"Ever wondered about {topic}? One clear scene, "
+                          "one simple takeaway. Save this and try it."),
+            "youtube": (f"Ever wondered about {topic}? Watch the short "
+                        "version, then tell me what you would add."),
+            "linkedin": (f"Ever wondered about {topic}? The lesson is "
+                         "keeping it simple and consistent. What has "
+                         "worked for you?"),
+        }
+    elif kind == "statement":
+        base = {
+            "x": f"Quick take on {topic} - no fluff, just the good part.",
+            "threads": (f"Quick take on {topic}, with the longer story: "
+                        "keep it simple, do the straightforward version "
+                        "well, and share what you learn along the way."),
+            "bluesky": f"Quick take: {topic}, done simply and well.",
+            "instagram": (f"Quick take on {topic}: one scene, one idea, "
+                          "one thing to try. Save this for later."),
+            "youtube": (f"Quick take on {topic} in under a minute. "
+                        "Full short version on this channel."),
+            "linkedin": (f"Quick take on {topic}: simplicity beats "
+                         "complexity when you stay consistent. Agree?"),
+        }
+    else:  # story
+        base = {
+            "x": f"Today's note on {topic}. Watch, save it, and tell me what you think.",
+            "threads": (f"Today's note on {topic}. I started simple, kept "
+                        "the straightforward version, and noted what "
+                        "worked. Here is the story in full, in the thread."),
+            "bluesky": f"Today's note: {topic}, kept simple.",
+            "instagram": (f"Today's note on {topic}: picture the scene, "
+                          "try the simple version, and share your take."),
+            "youtube": (f"Today's note on {topic}: watch the short, "
+                        "then tell me your version in the comments."),
+            "linkedin": (f"Today's note on {topic}: the lesson I keep "
+                         "coming back to is consistency over complexity."),
+        }
+    return base.get(platform, f"Note on {topic}.")
+
+
 def generate_drafts(topic: str, profile: dict | None = None,
                     notes: str = "", cfg: Config | None = None,
                     use_llm: bool = True,
@@ -154,29 +286,39 @@ def generate_drafts(topic: str, profile: dict | None = None,
     employer_opt_in = bool(profile.get("employer_opt_in", False))
     gaps = _fact_gaps(topic, notes or "")
     inferred = not any(profile.get(k) for k in ("name", "does", "niche", "tone"))
-    source = "template"
+    # Full LLM bodies first (one call); hook fallback second. Either
+    # way, a variant is labelled ai only if its body came from the LLM.
+    llm_bodies: dict[str, list[str]] | None = None
     hook = None
     if use_llm:
-        hook = _llm_hook(topic, profile, cfg)
-        if hook:
-            source = "ai"
+        llm_bodies = _llm_bodies(topic, profile, cfg)
+        if llm_bodies is None:
+            hook = _llm_hook(topic, profile, cfg)
     hashtags = _hashtags(topic)
     if company and employer_opt_in:
         # Company is a supplied fact, used only with opt-in.
         pass  # handled below per-variant, never for other profiles
 
-    variants = [
-        ("question", f"Ever wondered about {topic}? Here is the short version."),
-        ("statement", f"Quick take on {topic} - no fluff, just the good part."),
-        ("story", f"Today's note on {topic}. Watch, save it, and tell me what you think."),
-    ]
+    kinds = ["question", "statement", "story"]
     out: dict[str, list[dict]] = {}
     for platform in platforms:
         if platform not in _LIMITS:
             raise ValueError(f"Unknown platform: {platform}")
         drafts = []
-        for i, (kind, base) in enumerate(variants, start=1):
-            body = hook if (hook and i == 1) else base
+        for i, kind in enumerate(kinds, start=1):
+            llm_body = None
+            if llm_bodies and platform in llm_bodies:
+                if i - 1 < len(llm_bodies[platform]):
+                    llm_body = llm_bodies[platform][i - 1]
+            if llm_body is not None:
+                body = llm_body
+                is_ai = True
+            elif hook and i == 1:
+                body = hook
+                is_ai = True
+            else:
+                body = _template_body(platform, kind, topic)
+                is_ai = False
             if notes:
                 body = f"{body} {notes.strip()}"
             body = _apply_profile(body, profile if not inferred else None)
@@ -200,11 +342,12 @@ def generate_drafts(topic: str, profile: dict | None = None,
             drafts.append({
                 "platform": platform, "variant": i, "kind": kind,
                 "text": text, "hashtags": tags,
-                # Honest per-variant label: only variant 1 uses the LLM
-                # hook; the other variants are template bodies, even when
-                # a hook was generated for the pack.
-                "source": "ai" if (hook and i == 1) else "template",
-                "ai_hook": bool(hook and i == 1),
+                # Honest per-variant label: ai only if this variant's
+                # body came from the LLM (full body or hook fallback);
+                # every other variant is template, even in an ai pack.
+                "source": "ai" if is_ai else "template",
+                "ai_hook": bool(is_ai),
+                "ai_body": bool(llm_body is not None),
                 "inferred": inferred, "fact_gaps": gaps,
                 "source_labels": (
                     ["supplied topic/notes only - no profile invented"]

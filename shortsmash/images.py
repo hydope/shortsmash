@@ -1,13 +1,31 @@
-"""AI Image Studio provider interface for ShortSmash Social 0.4.
+"""AI Image Studio for ShortSmash Social 0.4.
 
-Offline-safe by default. Only the ``template`` provider (Pillow) and the
-``stock`` fallback (template when no stock key is available) generate files
-in this build. ``gemini`` and ``pollinations`` are interfaces only: they
-return a cost preview and fail clearly without billing/key, and are NEVER
-called by the demo or the tests. No money is spent by this module.
+Providers, in order of honesty about what they are:
+- ``template``: Pillow, offline, labelled template, never AI.
+- ``stock``: real Pixabay photos. Repo-alone path first: PIXABAY_API_KEY
+  from env/config (see Config.pixabay_key) via a direct httpx call to
+  pixabay.com/api/ - no vault helper, no unversioned file, is needed.
+  The vault-helper path is kept only as a local-dev fallback when it
+  exists. Template fallback only if zero photos download, labelled.
+- ``gemini``: REAL code path, capped, provenance recorded - but it is
+  only called when a Gemini key/billing is configured. Without a key
+  it fails clearly and spends nothing. Model is configurable via
+  cfg ``gemini_image_model`` / env GEMINI_IMAGE_MODEL; the default
+  below is the documented Nano Banana family model and must be
+  replaced with a live model id from ai.google.dev if it 404s.
+  Cost preview: $0.0336 per 1K image for the documented model.
+- ``pollinations``: REAL code path via the current gen.pollinations.ai
+  OpenAI-compatible endpoint, capped, key from env
+  POLLINATIONS_API_KEY. Without a key it fails clearly and spends
+  nothing. Pollen/credit pricing varies by model, so cost preview
+  is None and the daily cap is a count cap via daily_cap_usd only
+  when a USD estimate exists; otherwise generation is still
+  recorded and the user must check their Pollinations balance.
 
-Text overlays are added by Pillow templates AFTER generation, never claimed
-to be baked in by a model.
+No provider is called by the demo or by tests with a live key. Tests
+use mocks for gemini/pollinations and for the Pixabay HTTP call.
+Text overlays are added by Pillow templates AFTER generation, never
+claimed to be baked in by a model.
 """
 from __future__ import annotations
 
@@ -310,6 +328,188 @@ def _render_template(prompt: str, style: str, size: tuple[int, int],
     return out
 
 
+def _gemini_image_model(cfg=None) -> str:
+    """Configurable Gemini image model, never silently hardcoded as verified.
+
+    Default is the documented Nano Banana family model. If the API
+    returns 404 for it, set cfg gemini_image_model / env
+    GEMINI_IMAGE_MODEL to a live model id from ai.google.dev and retry.
+    """
+    import os
+    if cfg is not None:
+        try:
+            v = cfg.get("gemini_image_model")
+            if v:
+                return str(v)
+        except Exception:
+            pass
+    return os.environ.get("GEMINI_IMAGE_MODEL") or "gemini-2.5-flash-image"
+
+
+def _aspect_ratio(size: str) -> str:
+    return {"feed": "4:5", "story": "9:16", "link": "16:9"}.get(size, "1:1")
+
+
+def _gemini_generate(prompt: str, size: str, count: int, style: str,
+                     out_root: Path, slug: str, cfg=None) -> list[dict]:
+    """Real Gemini image call. Raises clearly without a key; never called
+    in tests except via mocked httpx. Returns candidate dicts."""
+    import base64
+    import httpx
+    key = None
+    if cfg is not None:
+        try:
+            key = cfg.gemini_key()
+        except Exception:
+            key = None
+    if not key:
+        import os
+        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        raise RuntimeError(
+            "Gemini image generation is NOT configured: no GEMINI_API_KEY "
+            "in env/config and no billing-linked project. The Gemini API "
+            "has no free image tier, paid 1K images start at $0.0336 each. "
+            "No API call was made and no money was spent.")
+    model = _gemini_image_model(cfg)
+    target = SIZES[size]
+    candidates = []
+    for i in range(1, count + 1):
+        full_prompt = f"{prompt}. {style}".strip() if style else prompt
+        body = {
+            "contents": [{"parts": [{"text": full_prompt}]}],
+            "generationConfig": {
+                "responseModalities": ["TEXT", "IMAGE"],
+                "imageConfig": {"aspectRatio": _aspect_ratio(size)},
+            },
+        }
+        r = httpx.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            params={"key": key}, json=body, timeout=120,
+            proxy=_egress_proxy())
+        if r.status_code in (401, 403):
+            raise RuntimeError(
+                "Gemini image call rejected (401/403): key/billing not "
+                "authorised for image generation. No image was saved. "
+                "Check the key and that the project has billing enabled.")
+        if r.status_code == 404:
+            raise RuntimeError(
+                f"Gemini image model {model!r} returned 404: it may be "
+                "retired. Set gemini_image_model / GEMINI_IMAGE_MODEL to "
+                "a live model id from ai.google.dev and retry. No image "
+                "was saved.")
+        r.raise_for_status()
+        data = r.json()
+        b64 = None
+        mime = "image/png"
+        try:
+            for part in data["candidates"][0]["content"]["parts"]:
+                inline = part.get("inlineData") or part.get("inline_data")
+                if inline and inline.get("data"):
+                    b64 = inline["data"]
+                    mime = inline.get("mimeType", mime)
+                    break
+        except Exception:
+            b64 = None
+        if not b64:
+            raise RuntimeError(
+                "Gemini image call returned no image data. Response was "
+                f"truncated for safety: {str(data)[:300]}. No image saved.")
+        raw = base64.b64decode(b64)
+        ext = ".png" if "png" in mime else ".jpg"
+        path = out_root / f"{slug}-{size}-gemini-{i}{ext}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        magic = raw[:4]
+        if magic[:2] != b"\xff\xd8" and magic != b"\x89PNG":
+            path.unlink(missing_ok=True)
+            raise RuntimeError("Gemini returned data that is not a valid PNG/JPEG image.")
+        candidates.append({
+            "candidate": i, "path": str(path), "size": size,
+            "dimensions": target, "provider": "gemini", "model": model,
+            "estimated_cost_usd": GEMINI_PRICE_PER_1K, "style_lock": style,
+            "note": "AI-generated image via Gemini API - check the platform AI disclosure flag before publishing.",
+            "provenance": {"prompt": prompt, "style_lock": style,
+                           "provider": "gemini", "model": model, "size": size,
+                           "estimated_cost_usd": GEMINI_PRICE_PER_1K},
+        })
+    return candidates
+
+
+def _pollinations_generate(prompt: str, size: str, count: int, style: str,
+                           out_root: Path, slug: str) -> list[dict]:
+    """Real Pollinations call via gen.pollinations.ai (OpenAI-compatible).
+
+    Key from POLLINATIONS_API_KEY only. Without it, fail clearly.
+    Response may be b64_json or a URL; both are handled, anything else
+    is a clear error, never a silent template.
+    """
+    import base64
+    import os
+    import httpx
+    key = os.environ.get("POLLINATIONS_API_KEY")
+    if not key:
+        raise RuntimeError(
+            "Pollinations image generation is NOT configured: no "
+            "POLLINATIONS_API_KEY in env. In 2026 tests the current API "
+            "requires a key/balance. No API call was made and no money "
+            "was spent. Use provider='template' for offline candidates.")
+    target = SIZES[size]
+    width, height = target
+    candidates = []
+    for i in range(1, count + 1):
+        full_prompt = f"{prompt}. {style}".strip() if style else prompt
+        r = httpx.post(
+            "https://gen.pollinations.ai/images/generations",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": "flux", "prompt": full_prompt,
+                  "width": width, "height": height, "n": 1},
+            timeout=120, proxy=_egress_proxy())
+        if r.status_code in (401, 402, 403):
+            raise RuntimeError(
+                f"Pollinations rejected the call ({r.status_code}): key or "
+                "balance insufficient. No image was saved.")
+        r.raise_for_status()
+        data = r.json()
+        item = None
+        try:
+            item = data["data"][0]
+        except Exception:
+            item = None
+        if not item:
+            raise RuntimeError(
+                f"Pollinations returned no image data: {str(data)[:300]}. "
+                "No image saved.")
+        path = out_root / f"{slug}-{size}-pollinations-{i}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if item.get("b64_json"):
+            path.write_bytes(base64.b64decode(item["b64_json"]))
+        elif item.get("url"):
+            with httpx.stream("GET", item["url"], timeout=60,
+                              follow_redirects=True,
+                              proxy=_egress_proxy()) as resp:
+                resp.raise_for_status()
+                with open(path, "wb") as fh:
+                    for chunk in resp.iter_bytes(1 << 20):
+                        fh.write(chunk)
+        else:
+            raise RuntimeError(
+                "Pollinations response had neither b64_json nor url. "
+                "No image saved.")
+        candidates.append({
+            "candidate": i, "path": str(path), "size": size,
+            "dimensions": target, "provider": "pollinations", "model": "flux",
+            "estimated_cost_usd": None, "style_lock": style,
+            "note": ("AI-generated image via Pollinations - Pollen/credit "
+                     "cost varies by model; check your Pollinations balance. "
+                     "Check the platform AI disclosure flag before publishing."),
+            "provenance": {"prompt": prompt, "style_lock": style,
+                           "provider": "pollinations", "model": "flux",
+                           "size": size, "estimated_cost_usd": None},
+        })
+    return candidates
+
+
 def generate(prompt: str, provider: str = "template", size: str = "feed",
              profile: dict | None = None, count: int = 4,
              daily_cap_usd: float = DEFAULT_DAILY_CAP_USD,
@@ -335,20 +535,51 @@ def generate(prompt: str, provider: str = "template", size: str = "feed",
                 f"Image daily cap exceeded: already spent ${spent:.4f} "
                 f"today on {provider}, plus ${total:.4f} would exceed "
                 f"cap ${daily_cap_usd:.2f}. No image was generated.")
+    # Real paid paths, only after the cap check above. Without a key
+    # they raise NOT configured with no call and no spend; with a key
+    # they call the real API and record usage. Tests mock httpx and
+    # never make a live paid call.
+    style = style_lock(profile) if profile else ""
+    out_root = Path(out_dir) if out_dir is not None else (
+        (Path(social_base) if social_base is not None else HOME / "social")
+        / "images")
+    out_root.mkdir(parents=True, exist_ok=True)
+    slug = hashlib.sha256(prompt.encode()).hexdigest()[:10]
     if provider == "gemini":
-        raise RuntimeError(
-            "Gemini image generation is NOT configured in this local build: "
-            "the Gemini API has no free image tier, paid 1K images start at "
-            f"${GEMINI_PRICE_PER_1K} each (preview for {count}: "
-            f"${total:.4f}, cap ${daily_cap_usd:.2f}), and billing/key setup "
-            "is a human step for Syed. No API call was made and no money "
-            "was spent. Use provider='template' for offline candidates.")
+        from .config import Config as _Cfg
+        try:
+            candidates = _gemini_generate(prompt, size, count, style,
+                                          out_root, slug, cfg=_Cfg())
+        except RuntimeError as exc:
+            # Keep the old test contract: missing key/billing reads as
+            # NOT configured, with the preview and cap in the message.
+            msg = str(exc)
+            if "NOT configured" in msg or "no GEMINI_API_KEY" in msg:
+                raise RuntimeError(
+                    "Gemini image generation is NOT configured: "
+                    "the Gemini API has no free image tier, paid 1K images "
+                    f"start at ${GEMINI_PRICE_PER_1K} each (preview for "
+                    f"{count}: ${total:.4f}, cap ${daily_cap_usd:.2f}), "
+                    "and billing/key setup is a human step for Syed. No "
+                    "API call was made and no money was spent. Use "
+                    "provider='template' for offline candidates.") from exc
+            raise
+        _record_usage("gemini", len(candidates),
+                      GEMINI_PRICE_PER_1K * len(candidates), social_base)
+        return {"prompt": prompt, "provider": "gemini", "size": size,
+                "dimensions": SIZES[size], "cost_preview": preview,
+                "candidates": candidates,
+                "note": "AI-generated images via Gemini API - check the "
+                        "platform AI disclosure flag before publishing."}
     if provider == "pollinations":
-        raise RuntimeError(
-            "Pollinations image generation is NOT configured in this local "
-            "build: it is experimental, capped, and requires a key/balance "
-            "in 2026 tests. No API call was made and no money was spent. "
-            "Use provider='template' for offline candidates.")
+        candidates = _pollinations_generate(prompt, size, count, style,
+                                            out_root, slug)
+        _record_usage("pollinations", len(candidates), 0.0, social_base)
+        return {"prompt": prompt, "provider": "pollinations", "size": size,
+                "dimensions": SIZES[size], "cost_preview": preview,
+                "candidates": candidates,
+                "note": "AI-generated images via Pollinations - Pollen/credit "
+                        "cost varies by model; check your balance."}
     note = ""
     if provider == "stock":
         # Real photos first: env-key Pixabay API, then vault-helper

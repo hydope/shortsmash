@@ -36,16 +36,45 @@ def _fmt_time(s: float) -> str:
 
 
 def whisper_words(audio: Path, offset: float = 0.0) -> list[Word]:
-    """Word timestamps from faster-whisper. Raises if deps/model unavailable."""
+    """Word timestamps from faster-whisper. Raises if deps/model unavailable.
+
+    Compatibility shim, documented not hidden: faster-whisper 1.2.1
+    calls av.open(..., metadata_errors="ignore"), which av 19 removed.
+    av.open works without that kwarg, so on a TypeError mentioning it
+    we retry once with a wrapper that drops the kwarg. No other
+    behaviour is changed, and the shim is removed if the call succeeds
+    the first time.
+    """
     from faster_whisper import WhisperModel
 
     model = WhisperModel("tiny", device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(str(audio), word_timestamps=True)
-    words: list[Word] = []
-    for seg in segments:
-        for w in seg.words or []:
-            words.append(Word(w.word.strip(), offset + w.start, offset + w.end))
-    return words
+    try:
+        segments, _ = model.transcribe(str(audio), word_timestamps=True)
+        words: list[Word] = []
+        for seg in segments:
+            for w in seg.words or []:
+                words.append(Word(w.word.strip(), offset + w.start, offset + w.end))
+        return words
+    except TypeError as exc:
+        if "metadata_errors" not in str(exc):
+            raise
+        import av as _av
+        _orig_open = _av.open
+
+        def _patched_open(*args, **kwargs):
+            kwargs.pop("metadata_errors", None)
+            return _orig_open(*args, **kwargs)
+
+        _av.open = _patched_open  # type: ignore[attr-defined]
+        try:
+            segments, _ = model.transcribe(str(audio), word_timestamps=True)
+        finally:
+            _av.open = _orig_open  # type: ignore[attr-defined]
+        words = []
+        for seg in segments:
+            for w in seg.words or []:
+                words.append(Word(w.word.strip(), offset + w.start, offset + w.end))
+        return words
 
 
 def distribute_words(scene: Scene, duration: float, offset: float) -> list[Word]:

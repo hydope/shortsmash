@@ -177,13 +177,24 @@ def _scene_changes(video: Path, start: float, end: float) -> tuple[int, str, boo
 
 
 def _face_signal(video: Path, start: float, end: float) -> tuple[int, str, bool]:
-    """Face detection only if OpenCV is actually installed. Otherwise unscored."""
-    try:
-        import cv2  # noqa: F401
-    except Exception:
-        return 0, "unscored - OpenCV not installed in this venv", False
+    """Face presence via Haar cascade, weighted 10, only if OpenCV with
+    CascadeClassifier is actually installed.
+
+    Honest version note: opencv-python-headless 5.x removed
+    CascadeClassifier, so face scoring requires the 4.x line (see
+    pyproject optional dependency ``face``). If CascadeClassifier is
+    absent, the signal is explicitly unscored, never faked with a
+    heuristic and called face detection.
+    """
     try:
         import cv2
+    except Exception:
+        return 0, "unscored - OpenCV not installed in this venv", False
+    if not hasattr(cv2, "CascadeClassifier"):
+        return 0, ("unscored - OpenCV installed but CascadeClassifier "
+                   "removed in opencv 5.x; install "
+                   "opencv-python-headless<5 for face scoring"), False
+    try:
         import tempfile
         mid = (start + end) / 2.0
         with tempfile.TemporaryDirectory() as td:
@@ -202,8 +213,8 @@ def _face_signal(video: Path, start: float, end: float) -> tuple[int, str, bool]
                 return 0, "unscored - Haar cascade unavailable", False
             faces = cascade.detectMultiScale(gray, 1.1, 4)
             n = len(faces)
-            return (5 if n >= 1 else 0,
-                    f"{n} face(s) detected in middle frame", True)
+            return (10 if n >= 1 else 0,
+                    f"{n} face(s) detected in middle frame (Haar cascade)", True)
     except Exception:
         return 0, "unscored - face detection failed", False
 
@@ -276,9 +287,9 @@ def _score_segment(words: list[str], excerpt: str, duration: float,
     else:
         signals["scene"] = {"score": 0, "weight": 5, "scored": False,
                             "note": "unscored - scene analysis disabled"}
-    # Face: informational, not in the total (kept honest, not inflated).
+    # Face: weighted 10, in the total only when actually scored.
     s, note, ok = _face_signal(video, start, end)
-    signals["face"] = {"score": s, "weight": 0, "scored": ok, "note": note}
+    signals["face"] = {"score": s, "weight": 10, "scored": ok, "note": note}
     earned = sum(v["score"] for v in signals.values() if v["scored"])
     max_scored = sum(v["weight"] for v in signals.values() if v["scored"])
     total = round(100 * earned / max_scored) if max_scored else None
@@ -333,8 +344,9 @@ def clip_candidates(video: Path, transcript_segments: list[dict] | None = None,
                     "speech_words_in_segment": scored["speech_words_in_segment"],
                     "transcript_excerpt": excerpt[:200],
                     "transcript_timed": True,
-                    "note": ("Weighted score from transcript, audio, and "
-                             "scene signals; face is informational only. "
+                    "note": ("Weighted score from transcript, audio, "
+                             "scene, and face signals (face weighted 10, "
+                             "scored only when Haar detection actually ran). "
                              "This is a transparent ranking aid, not a "
                              "virality guarantee."),
                 })
@@ -386,7 +398,7 @@ def clip_candidates(video: Path, transcript_segments: list[dict] | None = None,
                               "note": "unscored - no transcript available"},
                     "scene": {"score": 0, "weight": 5, "scored": False,
                               "note": "unscored - no transcript available"},
-                    "face": {"score": 0, "weight": 0, "scored": False,
+                    "face": {"score": 0, "weight": 10, "scored": False,
                              "note": "unscored - no transcript available"},
                 },
                 "transcript_excerpt": "",

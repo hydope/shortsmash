@@ -72,7 +72,7 @@ def post_draft(topic: str, notes: str = typer.Option(""),
 
 @app.command("image")
 def image_cmd(prompt: str,
-              provider: str = typer.Option("template", help="template|stock|gemini|pollinations"),
+              provider: str = typer.Option("template", help="template|stock|gemini|pollinations. stock: real Pixabay photos, repo-alone path first - set PIXABAY_API_KEY in env (Config.pixabay_key), no vault helper needed; helper is only a local-dev fallback. gemini/pollinations: real capped paths, fail clearly without a key/billing, never called in tests."),
               size: str = typer.Option("feed", help="feed|story|link"),
               cap: float = typer.Option(5.0, help="Daily cap in USD")):
     preview = images.cost_preview(provider, 4, cap)
@@ -128,37 +128,66 @@ def readiness_cmd():
                                       "no secret value was printed."}, indent=2))
 
 
-@app.command("validate")
-def validate_cmd(pack_id: str, platform: str = typer.Option("x")):
-    """Dry-run validation of a pack's draft against platform limits, no live
-    API call. Reports pass/fail per check; approval is reported separately."""
+def validate_pack_result(pack_id: str, platform: str = "x",
+                         base: Path | None = None) -> dict:
+    """Return the validate report dict; raises KeyError/ValueError.
+    ``base`` is the social base dir (default HOME/social); tests pass
+    a tmp base so validation is testable without touching real HOME."""
+    """Validate a pack's draft against platform limits, no live API call.
+
+    Two distinct modes, so a post-publish pack is never misleadingly
+    reported as failing a pre-publish gate:
+    - pre_publish (status draft/approved/scheduled): checks
+      approved_or_scheduled, character limit, non-empty text, disclosure.
+    - post_publish_report (status published_dry_run): checks that the
+      dry-run publish log entry exists for this pack/platform, plus
+      character limit, non-empty text, and disclosure. The
+      approved_or_scheduled check is NOT applied here, because a
+      published draft is no longer in that state by design.
+    """
     from . import posts as posts_mod
-    try:
-        pack = approval.get_pack(pack_id)
-    except KeyError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1)
+    pack = approval.get_pack(pack_id, base=base)  # raises KeyError if missing
     drafts = [d for d in pack["drafts"] if d.get("platform") == platform]
     if not drafts:
-        console.print(f"[red]No draft for platform {platform!r} in pack {pack_id}[/red]")
-        raise typer.Exit(1)
+        raise ValueError(f"No draft for platform {platform!r} in pack {pack_id}")
     draft = drafts[0]
     text = draft.get("text", "")
     limit = posts_mod._LIMITS.get(platform, 1000)
-    checks = [
-        {"check": "approved_or_scheduled",
-         "pass": draft.get("status") in ("approved", "scheduled"),
-         "detail": f"status={draft.get('status')}"},
-        {"check": "character_limit",
-         "pass": len(text) <= limit,
-         "detail": f"{len(text)} chars, limit {limit}"},
-        {"check": "non_empty_text",
-         "pass": bool(text.strip()),
-         "detail": "text is empty" if not text.strip() else "ok"},
-        {"check": "ai_disclosure_flag_present",
-         "pass": "source" in draft,
-         "detail": f"source={draft.get('source')}"},
-    ]
+    if draft.get("status") == "published_dry_run":
+        mode = "post_publish_report"
+        log = approval.publish_log(base=base)
+        has_log = any(e.get("pack_id") == pack_id and e.get("platform") == platform
+                      for e in log)
+        checks = [
+            {"check": "dry_run_publish_log_entry_present",
+             "pass": has_log,
+             "detail": "dry-run publish log entry found" if has_log else "no publish log entry found"},
+            {"check": "character_limit",
+             "pass": len(text) <= limit,
+             "detail": f"{len(text)} chars, limit {limit}"},
+            {"check": "non_empty_text",
+             "pass": bool(text.strip()),
+             "detail": "text is empty" if not text.strip() else "ok"},
+            {"check": "ai_disclosure_flag_present",
+             "pass": "source" in draft,
+             "detail": f"source={draft.get('source')}"},
+        ]
+    else:
+        mode = "pre_publish"
+        checks = [
+            {"check": "approved_or_scheduled",
+             "pass": draft.get("status") in ("approved", "scheduled"),
+             "detail": f"status={draft.get('status')}"},
+            {"check": "character_limit",
+             "pass": len(text) <= limit,
+             "detail": f"{len(text)} chars, limit {limit}"},
+            {"check": "non_empty_text",
+             "pass": bool(text.strip()),
+             "detail": "text is empty" if not text.strip() else "ok"},
+            {"check": "ai_disclosure_flag_present",
+             "pass": "source" in draft,
+             "detail": f"source={draft.get('source')}"},
+        ]
     media = pack.get("media") or {}
     imgs = (media.get("images") or {}).get("candidates") if isinstance(media.get("images"), dict) else None
     if imgs:
@@ -171,9 +200,24 @@ def validate_cmd(pack_id: str, platform: str = typer.Option("x")):
                 checks.append({"check": "media_size_under_50mb",
                                "pass": p.stat().st_size < 50_000_000,
                                "detail": f"{p.stat().st_size} bytes"})
-    result = {"pack_id": pack_id, "platform": platform,
+    result = {"pack_id": pack_id, "platform": platform, "mode": mode,
               "overall_pass": all(c["pass"] for c in checks), "checks": checks,
-              "live_api_called": False}
+              "live_api_called": False,
+              "note": ("Post-publish report: approved_or_scheduled is not "
+                       "applied to a published draft.")
+              if mode == "post_publish_report" else
+              "Pre-publish gate: draft must be approved/scheduled first."}
+    return result
+
+
+@app.command("validate")
+def validate_cmd(pack_id: str, platform: str = typer.Option("x")):
+    """Validate a pack; see validate_pack_result for the two modes."""
+    try:
+        result = validate_pack_result(pack_id, platform)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
     console.print(json.dumps(result, indent=2))
 
 

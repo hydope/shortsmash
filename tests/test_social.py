@@ -208,8 +208,19 @@ def test_clip_candidates_with_transcript_are_scored_from_it(tmp_path):
         # Weighted, labelled score, not a virality claim.
         assert isinstance(c["score"], int) and 0 <= c["score"] <= 100
         assert c["scored"] is True
-        assert c["score_breakdown"]["face"]["scored"] is False
-        assert "OpenCV" in c["score_breakdown"]["face"]["note"]
+        # Face: scored only when Haar detection actually ran (OpenCV
+        # 4.x with CascadeClassifier); otherwise explicitly unscored.
+        try:
+            import cv2 as _cv2
+            face_expected = hasattr(_cv2, "CascadeClassifier")
+        except Exception:
+            face_expected = False
+        assert c["score_breakdown"]["face"]["scored"] is face_expected
+        assert c["score_breakdown"]["face"]["weight"] == 10
+        if face_expected:
+            assert "face(s) detected" in c["score_breakdown"]["face"]["note"]
+        else:
+            assert "OpenCV" in c["score_breakdown"]["face"]["note"]
     assert result["candidates"][0]["speech_words_in_segment"] >= 3
     # Question hook in the first segment must out-score the plain third.
     assert result["candidates"][0]["score"] >= result["candidates"][2]["score"]
@@ -263,6 +274,9 @@ def test_platform_openers_differ_in_first_20_chars():
 
 
 def test_llm_hook_path_labels_source_ai_when_mocked(monkeypatch):
+    # Isolate the hook fallback: full-body path must return None here,
+    # otherwise a live LLM answer would legitimately override the hook.
+    monkeypatch.setattr(posts, "_llm_bodies", lambda *a, **k: None)
     monkeypatch.setattr(posts, "_llm_hook",
                         lambda topic, profile, cfg: "Sunrise, a fresh catch!")
     drafts = posts.generate_drafts("morning fishing", _profile(), use_llm=True)

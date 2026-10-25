@@ -742,6 +742,7 @@ h3 .sub{font-weight:500;font-size:13px;color:var(--dim);margin-left:10px}
 <button onclick="tab('settings')">⚙️ Settings</button>
 <button onclick="tab('lyrics')">🎵 Lyrics</button>
 <button onclick="tab('auto')">🤖 Auto</button>
+<button onclick="tab('social')">💬 Social</button>
 </nav><main>
 <div id="t-studio" class="tab on">
  <div class="panel hero" id="welcome">
@@ -835,6 +836,9 @@ h3 .sub{font-weight:500;font-size:13px;color:var(--dim);margin-left:10px}
 </div>
 <div id="t-stats" class="tab"><div class="panel"><h3>Studio stats</h3>
  <div id="statlist"></div></div></div>
+<div id="t-social" class="tab"><div class="panel"><h3>💬 Social - Approval Queue</h3>
+ <p class="log">Human approval only. No live publishing from Studio. An agent must not approve its own post. <a href="/social" target="_blank">Open full social page ↗</a></p>
+ <div id="socialpacks"></div></div></div>
 <div id="t-auto" class="tab">
  <div class="panel hero"><h2>🤖 Autopilot. <span>Videos while you sleep.</span></h2>
   <p>Pick a niche. ShortSmash harvests trends, generates videos, dubs them, and
@@ -909,7 +913,22 @@ event.target.classList.add('on');
 if(n==='library')loadProjects();if(n==='stats')loadStats();
 if(n==='trends')loadTrends();if(n==='publish')loadPublish();
 if(n==='settings')loadSettings();
-if(n==='lyrics')loadLanguages();
+if(n==='lyrics')loadLanguages();if(n==='social')loadSocial();
+async function loadSocial(){
+ try{
+  const packs=await (await fetch('/api/social/packs')).json();
+  const el=document.getElementById('socialpacks');
+  if(!packs.length){el.innerHTML='<p class="log">No packs yet. Create one with: shortsmash social repurpose &lt;file&gt;</p>';return;}
+  el.innerHTML=packs.map(p=>`<div class="panel"><h4>${p.topic}</h4><small>Pack ${p.id}</small>`+
+   p.drafts.map(d=>`<div>${d.platform} [${d.status}] ${d.text.slice(0,160)}</div>`).join('')+
+   `<button class="go" onclick="socialAct('${p.id}','approve')">Approve all</button> `+
+   `<button onclick="socialAct('${p.id}','reject')">Reject all</button></div>`).join('');
+ }catch(e){document.getElementById('socialpacks').innerHTML='<p class="log">Could not load social packs.</p>';}
+}
+async function socialAct(id,kind){
+ await fetch('/api/social/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pack_id:id})});
+ loadSocial();
+}
 async function loadRatios(){
  try{
   const r=await fetch('/api/ratios');const j=await r.json();
