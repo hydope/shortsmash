@@ -205,9 +205,22 @@ After install, launch **ShortSmash Studio** from the Start Menu / Desktop
 Prefer it manual? Download the repo and double-click **`install.bat`**
 (Windows) or run `./install.sh` (Linux/macOS).
 
-Needs Python 3.11–3.13 and ffmpeg (the PowerShell installer gets both for
-you). On Python 3.14+ the offline footage check is skipped automatically
-(torch has no build for it yet).
+Cloning just for the code? The full repo is ~213 MB of demo videos — skip
+them with a sparse checkout:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse https://github.com/hydope/shortsmash.git
+git -C shortsmash sparse-checkout set shortsmash scripts fonts
+```
+
+If an earlier install failed halfway, delete the ShortSmash folder and
+re-run the one-liner.
+
+Needs Python 3.11–3.13 and ffmpeg. The Windows one-line installers fetch
+both for you if missing — and if your machine already has Python 3.14, they
+install 3.13 (PowerShell) or 3.12 (CMD) side by side and use that instead,
+since 3.14 cannot build a working virtual environment yet. Installs fetch
+code only (~2 MB, no demo videos).
 
 Make a video in the 🎬 Studio tab, then hit the 🚀 **Publish tab** to post it to
 10 platforms (YouTube, TikTok, Instagram, X, Threads, Bluesky, LinkedIn,
