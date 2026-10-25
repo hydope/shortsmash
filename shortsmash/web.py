@@ -543,6 +543,74 @@ def stats():
     }
 
 
+# --- ShortSmash Social 0.4 (minimal, no new dependencies) ---
+# Approval is human-only: these endpoints approve/reject drafts in the
+# Studio UI. There is deliberately NO live-publish endpoint here, and
+# the MCP tools below deliberately have no approve/publish tools.
+class SocialActionRequest(BaseModel):
+    pack_id: str
+    platform: str | None = None
+
+
+@app.get("/api/social/packs")
+def social_packs():
+    from . import approval
+    return approval.list_packs()
+
+
+@app.post("/api/social/approve")
+def social_approve(req: SocialActionRequest):
+    from . import approval
+    try:
+        return approval.approve_pack(req.pack_id, req.platform)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/api/social/reject")
+def social_reject(req: SocialActionRequest):
+    from . import approval
+    try:
+        return approval.reject_pack(req.pack_id, req.platform)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+
+
+_SOCIAL_PAGE = """<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>ShortSmash Social - Approval Queue</title>
+<style>body{font-family:system-ui;background:#0a0d13;color:#eef1f7;margin:0;padding:24px}
+button{background:#f97316;border:none;color:#fff;padding:8px 16px;border-radius:8px;cursor:pointer;margin-right:8px}
+.pack{border:1px solid #222a3d;border-radius:12px;padding:16px;margin-bottom:16px}
+.draft{border-top:1px solid #222a3d;padding:8px 0;font-size:14px}
+small{color:#8f99ae}</style></head><body>
+<h1>ShortSmash Social - Approval Queue</h1>
+<p><small>Human approval only. No live publishing from this page.
+An agent must not approve its own post.</small></p>
+<div id="packs">Loading…</div>
+<script>
+async function load(){
+  const packs = await (await fetch('/api/social/packs')).json();
+  const el = document.getElementById('packs');
+  if(!packs.length){ el.innerHTML = '<p>No packs yet. Create one with: shortsmash social repurpose &lt;file&gt;</p>'; return; }
+  el.innerHTML = packs.map(p => `<div class="pack"><h3>${p.topic}</h3><small>Pack ${p.id}</small>
+    ${p.drafts.map(d => `<div class="draft"><b>${d.platform}</b> [${d.status}] ${d.text.slice(0,180)}</div>`).join('')}
+    <button onclick="act('${p.id}','approve')">Approve all</button>
+    <button onclick="act('${p.id}','reject')">Reject all</button></div>`).join('');
+}
+async function act(id, kind){
+  await fetch('/api/social/' + kind, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({pack_id: id})});
+  load();
+}
+load();
+</script></body></html>"""
+
+
+@app.get("/social", response_class=HTMLResponse)
+def social_page():
+    return _SOCIAL_PAGE
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTML_PAGE
@@ -674,6 +742,7 @@ h3 .sub{font-weight:500;font-size:13px;color:var(--dim);margin-left:10px}
 <button onclick="tab('settings')">⚙️ Settings</button>
 <button onclick="tab('lyrics')">🎵 Lyrics</button>
 <button onclick="tab('auto')">🤖 Auto</button>
+<button onclick="tab('social')">💬 Social</button>
 </nav><main>
 <div id="t-studio" class="tab on">
  <div class="panel hero" id="welcome">
@@ -767,6 +836,9 @@ h3 .sub{font-weight:500;font-size:13px;color:var(--dim);margin-left:10px}
 </div>
 <div id="t-stats" class="tab"><div class="panel"><h3>Studio stats</h3>
  <div id="statlist"></div></div></div>
+<div id="t-social" class="tab"><div class="panel"><h3>💬 Social - Approval Queue</h3>
+ <p class="log">Human approval only. No live publishing from Studio. An agent must not approve its own post. <a href="/social" target="_blank">Open full social page ↗</a></p>
+ <div id="socialpacks"></div></div></div>
 <div id="t-auto" class="tab">
  <div class="panel hero"><h2>🤖 Autopilot. <span>Videos while you sleep.</span></h2>
   <p>Pick a niche. ShortSmash harvests trends, generates videos, dubs them, and
@@ -841,7 +913,22 @@ event.target.classList.add('on');
 if(n==='library')loadProjects();if(n==='stats')loadStats();
 if(n==='trends')loadTrends();if(n==='publish')loadPublish();
 if(n==='settings')loadSettings();
-if(n==='lyrics')loadLanguages();
+if(n==='lyrics')loadLanguages();if(n==='social')loadSocial();
+async function loadSocial(){
+ try{
+  const packs=await (await fetch('/api/social/packs')).json();
+  const el=document.getElementById('socialpacks');
+  if(!packs.length){el.innerHTML='<p class="log">No packs yet. Create one with: shortsmash social repurpose &lt;file&gt;</p>';return;}
+  el.innerHTML=packs.map(p=>`<div class="panel"><h4>${p.topic}</h4><small>Pack ${p.id}</small>`+
+   p.drafts.map(d=>`<div>${d.platform} [${d.status}] ${d.text.slice(0,160)}</div>`).join('')+
+   `<button class="go" onclick="socialAct('${p.id}','approve')">Approve all</button> `+
+   `<button onclick="socialAct('${p.id}','reject')">Reject all</button></div>`).join('');
+ }catch(e){document.getElementById('socialpacks').innerHTML='<p class="log">Could not load social packs.</p>';}
+}
+async function socialAct(id,kind){
+ await fetch('/api/social/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pack_id:id})});
+ loadSocial();
+}
 async function loadRatios(){
  try{
   const r=await fetch('/api/ratios');const j=await r.json();

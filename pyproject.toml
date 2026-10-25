@@ -33,6 +33,10 @@ x = ["tweepy>=4.14"]
 schedule = ["apscheduler>=3.10"]
 trends = ["pytrends>=4.9"]
 vision = ["torch", "transformers", "pillow"]
+# Optional, for ShortSmash Social clip face scoring only. Pinned below 5
+# on purpose: opencv-python-headless 5.x removed CascadeClassifier,
+# which repurpose.py uses. Install with: pip install "shortsmash[face]"
+face = ["opencv-python-headless>=4.10,<5"]
 mcp = ["mcp<2"]
 web = ["fastapi>=0.100", "uvicorn>=0.20"]
 bluesky = ["httpx>=0.25"]
