@@ -207,6 +207,7 @@ def search_stock_photos(query: str, per_page: int = 4, cfg=None,
             raw.unlink(missing_ok=True)
             continue
         # Centre-crop/resize to the platform target size with Pillow.
+        # Without Pillow, keep the downloaded photo as-is instead of failing.
         try:
             from PIL import Image
             img = Image.open(raw).convert("RGB")
@@ -290,7 +291,12 @@ def _palette(prompt: str, style: str, candidate: int):
 def _render_template(prompt: str, style: str, size: tuple[int, int],
                      candidate: int, out: Path) -> Path:
     """Pillow template: gradient background + title overlay. Labelled template."""
-    from PIL import Image, ImageDraw, ImageFont
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError as exc:
+        raise RuntimeError(
+            "Template images need Pillow: pip install 'shortsmash[images]'"
+        ) from exc
 
     w, h = size
     top, mid, bottom = _palette(prompt, style, candidate)

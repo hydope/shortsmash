@@ -8,6 +8,6 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
-      - run: pip install -e '.[ai,voice,captions,trends,mcp,web]' pytest
+      - run: pip install -e '.[ai,voice,captions,trends,mcp,web,images]' pytest
       - run: python -m pytest tests/ -q
       - run: python -m ruff check shortsmash/ 2>/dev/null || echo "ruff not installed, skipping"
