@@ -61,7 +61,7 @@ def doctor():
     check("ffmpeg + ffprobe + libass", edit.render_quiet_check)
     check("Edge-TTS (voice)", lambda: __import__("edge_tts"))
     check("faster-whisper (captions)", lambda: __import__("faster_whisper"))
-    check("google-generativeai (script/drafts)", lambda: __import__("google.generativeai"))
+    check("google-genai (script/drafts)", lambda: __import__("google.genai"))
     cfg = Config()
     console.print(f"[{'green' if cfg.gemini_key() else 'yellow'}]"
                   f"{'✓' if cfg.gemini_key() else '○'}[/] GEMINI_API_KEY "

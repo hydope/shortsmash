@@ -279,19 +279,21 @@ def _gemini(system: str | None, user: str, cfg: Config,
     model = cfg.get("gemini_model") or "gemini-3.8-flash"
     if cfg.gemini_key():
         try:
-            import google.generativeai as genai
+            from google import genai
         except ImportError as exc:
             raise RuntimeError("pip install 'shortsmash[ai]' first.") from exc
-        genai.configure(api_key=cfg.gemini_key())
-        gmodel = genai.GenerativeModel(
-            model,
-            system_instruction=system,
-            generation_config={
-                "response_mime_type": "application/json" if json_mode else "text/plain",
-                "temperature": temperature,
-            },
+        # google-genai (the supported SDK; google-generativeai is end-of-life).
+        client = genai.Client(api_key=cfg.gemini_key())
+        resp = client.models.generate_content(
+            model=model,
+            contents=user,
+            config=genai.types.GenerateContentConfig(
+                system_instruction=system,
+                response_mime_type="application/json" if json_mode else "text/plain",
+                temperature=temperature,
+            ),
         )
-        return gmodel.generate_content(user).text
+        return resp.text
     # Vault-held key: the helper's request carries the surrogate; the key
     # itself never enters this process.
     data = _helper_call("generate", {"system": system, "user": user,

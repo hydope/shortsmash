@@ -225,14 +225,32 @@ def validate_cmd(pack_id: str, platform: str = typer.Option("x")):
 def repurpose_cmd(source: str, topic: str = typer.Option(""),
                   transcript: Optional[str] = typer.Option(None, help="Transcript file: .srt, timed .txt, or plain .txt"),
                   no_audio: bool = typer.Option(False, help="Skip ffprobe audio-energy signal"),
-                  no_scene: bool = typer.Option(False, help="Skip ffmpeg scene-change signal")):
+                  no_scene: bool = typer.Option(False, help="Skip ffmpeg scene-change signal"),
+                  no_transcribe: bool = typer.Option(False, help="Skip auto-transcription; clips stay unscored")):
     path = Path(source)
     if path.exists():
         staged = repurpose.stage_input(path)
         console.print(json.dumps(staged, indent=2))
         if staged["kind"] == "video":
+            segments = None
+            if transcript is None and not no_transcribe:
+                # Auto-transcribe so raw video gets scored clips, not just
+                # unscored candidates. A supplied --transcript file always
+                # wins (clip_candidates prefers it). Any failure — no
+                # speech, missing deps/model — falls back to unscored
+                # candidates with a clear note. Nothing is ever invented.
+                try:
+                    auto = repurpose.transcript_from_audio(Path(staged["staged"]))
+                    segments = auto["segments"] or None
+                    if segments:
+                        console.print(f"Auto-transcribed {auto['words']} words via Whisper; scoring clips from timed segments.")
+                    else:
+                        console.print("Whisper found no speech; clips stay unscored.")
+                except Exception as exc:
+                    console.print(f"Auto-transcription unavailable ({exc}); clips stay unscored.")
             clips = repurpose.clip_candidates(
                 Path(staged["staged"]),
+                transcript_segments=segments,
                 transcript_path=Path(transcript) if transcript else None,
                 use_audio=not no_audio, use_scene=not no_scene)
             console.print(json.dumps(clips, indent=2))
